@@ -1,72 +1,143 @@
--- @createDomain@ below generates a warning about orphan instances, but we like
--- our code to be warning-free.
 {-# OPTIONS_GHC -Wno-orphans #-}
-
 {-# OPTIONS_GHC -Wno-tabs #-}
 
 module Example.Project where
-
 import Clash.Prelude
 
--- Create a domain with the frequency of your input clock. For this example we used
--- 50 MHz.
 createDomain vSystem{vName="Dom50", vPeriod=hzToPeriod 50e6}
 
--- Type:
-type Dim	= 13
-type F 		= Signed 16
-type VecD 	= Vec Dim F
-type Acc 	= Signed 32
+--------------------------
+-- Types and parameters --
+--------------------------
+type Dim   = 13
+type Acc   = Signed 16
+type AccWide = Signed 32
+type State = Vec Dim Acc
+type NumPats = 2
+type Patterns = Vec NumPats State
+type Iter = Unsigned 4
 
-p0 :: VecD
-p0 = 1 :> -28 :> -11 :> 0 :> 107 :> 1 :> 137 :> 4 :> 102 :> 41 :> 50 :> 83 :> 111 :> Nil
+--------------
+-- Patterns --
+--------------
+p0 :: State
+p0 = 384 :> -128 :> 64 :> -256 :> 512 :> 128 :> -64 :> 0 :> 256 :> -192 :> 96 :> 320 :> -32 :> Nil
 
-p1 :: VecD
-p1 = -6 :> 107 :> 43 :> 3 :> 66 :> -6 :> 130 :> -18 :> 74 :> 74 :> 38 :> 105 :> 82 :> Nil
+p1 :: State
+p1 = -256 :> 448 :> -96 :> 128 :> -512 :> 64 :> 192 :> -32 :> -128 :> 384 :> -64 :> 0 :> 256 :> Nil
 
-dot :: VecD -> VecD -> Acc
-dot a b = sum (zipWith mull a b)
-	where
-		mull :: F -> F -> Acc
-		mull x y = resize (x * y)
+patterns :: Patterns
+patterns =
+    p0 :> p1 :> Nil
 
-classify :: VecD -> Bit
-classify x =
-  let
-    s0 = dot x p0
-    s1 = dot x p1
-  in
-    if s1 > s0 then 1 else 0
+-----------------------
+-- Utility functions --
+-----------------------
 
--- | @topEntity@ is Clash@s equivalent of @main@ in other programming languages.
--- Clash will look for it when compiling "Example.Project" and translate it to
--- HDL. While polymorphism can be used freely in Clash projects, a @topEntity@
--- must be monomorphic and must use non- recursive types. Or, to put it
--- hand-wavily, a @topEntity@ must be translatable to a static number of wires.
---
--- Top entities must be monomorphic, meaning we have to specify all type variables.
--- In this case, we are using the @Dom50@ domain, which we created with @createDomain@
--- and we are using 8-bit unsigned numbers.
+dot :: State -> State -> Acc
+dot a b = sum (zipWith (*) a b)
+
+dotWide :: State -> State -> AccWide
+dotWide a b = sum (zipWith (\x y -> resize x * resize y) a b)
+
+clampScore :: AccWide -> AccWide
+clampScore s =
+    if s > 8 then 8
+    else if s < (-8) then (-8)
+    else s
+
+expLUT :: Vec 17 AccWide
+expLUT =
+    5  :> 8  :> 13 :> 21 :> 35 :> 57 :> 94 :> 155 :>
+    256 :> 422 :> 696 :> 1147 :> 1892 :> 3119 :> 5142 :> 8478 :>
+    13977 :> Nil
+
+expApprox :: AccWide -> AccWide
+expApprox s =
+    let idx = fromIntegral (s + 8) :: Unsigned 5
+    in expLUT !! idx
+
+softmaxShift :: Int
+softmaxShift = 16
+
+
+safeDiv :: AccWide -> AccWide -> AccWide
+safeDiv num den =
+    if den == 0 then 0 else num `div` den
+
+sqError :: State -> State -> AccWide
+sqError y t =
+    sum (map (\d -> let w = resize d :: AccWide in w*w) (zipWith (-) y t))
+
+linfDist :: State -> State -> Acc
+linfDist y t =
+    foldl max 0 (map abs (zipWith (-) y t))
+
+----------------------------------------------------------------------
+-- Modern Hopfield update step (softmax attention, fixed-point)
+----------------------------------------------------------------------
+
+hopfieldStep :: Patterns -> State -> State
+hopfieldStep pats x =
+    let scores = map (`dotWide` x) pats
+        scoresScaled = map (clampScore . (`shiftR` softmaxShift)) scores
+        exps = map expApprox scoresScaled
+        sumExp = sum exps
+        col i = map (\p -> p !! i) pats
+        combine i =
+            let ws = zipWith
+                        (\e p -> (resize e :: AccWide) * (resize p :: AccWide))
+                        exps
+                        (col i)
+                wsum = sum ws
+                out = safeDiv wsum sumExp
+            in resize out :: Acc
+    in imap (\i _ -> combine i) x
+
+----------------------------------------------------------------------
+-- Sequential core (1 iteration per clock)
+----------------------------------------------------------------------
+
+hopfieldCore ::
+    HiddenClockResetEnable Dom50 =>
+    Signal Dom50 State ->
+    Signal Dom50 State
+hopfieldCore x0 =
+    mealy step initState x0
+    where
+        maxIter :: Iter
+        maxIter = 8
+        initState = (repeat 0, 0 :: Iter)
+        step (st, it) x =
+            if x /= st then
+                ((x, 0), x)
+            else
+                let st' = hopfieldStep patterns st
+                    done = st' == st || it == maxIter
+                    it' = if done then it else it + 1
+                in ((st', it'), st')
+
+----------------------------------------------------------------------
+-- Top entity
+----------------------------------------------------------------------
+
 topEntity ::
-  Clock Dom50 ->
-  Reset Dom50 ->
-  Enable Dom50 ->
-  Signal Dom50 VecD ->
-  Signal Dom50 Bit
-topEntity = exposeClockResetEnable (fmap classify)
+    Clock Dom50 ->
+    Reset Dom50 ->
+    Enable Dom50 ->
+    Signal Dom50 State ->
+    Signal Dom50 State
+topEntity =
+    exposeClockResetEnable hopfieldCore
 
--- To specify the names of the ports of our top entity, we create a @Synthesize@ annotation.
 {-# ANN topEntity
-  (Synthesize
-    { t_name = "hopular_classifier"
-    , t_inputs = [ PortName "CLK"
-                 , PortName "RST"
-                 , PortName "EN"
-                 , PortName "X"
-                 ]
-    , t_output = PortName "CLASS"
-    }) #-}
-
--- Make sure GHC does not apply any optimizations to the boundaries of the design.
--- For GHC versions 9.2 or older, use: {-# NOINLINE topEntity #-}
+    (Synthesize
+        { t_name = "hopular_classifier"
+        , t_inputs = [ PortName "CLK"
+                    , PortName "RST"
+                    , PortName "EN"
+                    , PortName "X"
+                    ]
+        , t_output = PortName "CLASS"
+        }) #-}
 {-# OPAQUE topEntity #-}
