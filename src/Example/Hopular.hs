@@ -1,7 +1,7 @@
 {-# OPTIONS_GHC -Wno-orphans #-}
 {-# OPTIONS_GHC -Wno-tabs #-}
 
-module Example.Hopfield where
+module Example.Hopular where
 
 import Clash.Prelude
 import Example.Types
@@ -9,11 +9,11 @@ import Example.Patterns
 import Example.Utils
 
 ----------------------------------------------------------------------
--- Modern Hopfield update step (softmax attention)
+-- Modern Hopular update step (softmax attention)
 ----------------------------------------------------------------------
 
-hopfieldStep :: Patterns -> State -> State
-hopfieldStep pats x =
+hopularStep :: Patterns -> State -> State
+hopularStep pats x =
     let scores = map (`dotWide` x) pats
         scoresScaled = map (clampScore . (`shiftR` softmaxShift)) scores
         exps = map expApprox scoresScaled
@@ -33,11 +33,11 @@ hopfieldStep pats x =
 -- Sequential core (1 iteration/clock)
 ----------------------------------------------------------------------
 
-hopfieldCore ::
+hopularCore ::
     HiddenClockResetEnable Dom50 =>
     Signal Dom50 State ->
     Signal Dom50 State
-hopfieldCore x0 =
+hopularCore x0 =
     mealy step initState x0
     where
         maxIter :: Iter
@@ -47,7 +47,7 @@ hopfieldCore x0 =
             if x /= st then
                 ((x, 0), x)
             else
-                let st' = hopfieldStep patterns st
+                let st' = hopularStep patterns st
                     done = st' == st || it == maxIter
                     it' = if done then it else it + 1
                 in ((st', it'), st')

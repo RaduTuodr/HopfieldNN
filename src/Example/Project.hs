@@ -3,7 +3,7 @@
 
 module Example.Project where
 import Clash.Prelude
-import Example.Hopfield
+import Example.Hopular
 
 createDomain vSystem{vName="Dom50", vPeriod=hzToPeriod 50e6}
 
@@ -18,7 +18,7 @@ topEntity ::
     Signal Dom50 State ->
     Signal Dom50 State
 topEntity =
-    exposeClockResetEnable hopfieldCore
+    exposeClockResetEnable hopularCore
 
 {-# ANN topEntity
     (Synthesize
