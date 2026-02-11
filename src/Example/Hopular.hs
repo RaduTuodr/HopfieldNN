@@ -8,9 +8,9 @@ import Example.Types
 import Example.Patterns
 import Example.Utils
 
-----------------------------------------------------------------------
--- Modern Hopular update step (softmax attention)
-----------------------------------------------------------------------
+----------------------------------------------------
+-- Modern Hopular update step (softmax attention) --
+----------------------------------------------------
 
 hopularStep :: Patterns -> State -> State
 hopularStep pats x =
@@ -29,9 +29,9 @@ hopularStep pats x =
             in resize out :: Acc
     in imap (\i _ -> combine i) x
 
-----------------------------------------------------------------------
--- Sequential core (1 iteration/clock)
-----------------------------------------------------------------------
+-----------------------------------------
+-- Sequential core (1 iteration/clock) --
+-----------------------------------------
 
 hopularCore ::
     HiddenClockResetEnable Dom50 =>
